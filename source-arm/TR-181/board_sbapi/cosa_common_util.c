@@ -74,9 +74,12 @@
 #include "cosa_rbus_handler_apis.h"
 #include "safec_lib_common.h"
 #include "dslh_definitions_database.h"
+#include "cosa_nat_apis.h"
 
 #define IPV6_PREFIX "Device.IP.Interface.1.IPv6Prefix.1.Prefix"
 #define IPV6_PREFIX_EVENT "tr_erouter0_dhcpv6_client_v6pref"
+
+#define WAN_TO_LAN_OPERATIONAL_MODE "wan_to_lan_operational_mode"
 
 #if defined(_RDKB_GLOBAL_PRODUCT_REQ_)
 unsigned char gIsLANULAFeatureSupport = FALSE;
@@ -94,6 +97,12 @@ extern void* g_pDslhDmlAgent;
 
 
 void ValidUlaHandleEventAsync(void);
+#endif
+
+volatile bool gWanStatus = false ; // false : stopped/starting, true : started
+#if defined(FEATURE_MAPT) || defined(FEATURE_SUPPORT_MAPT_NAT46)
+volatile int gMaptTotalPorts = 0 ;
+volatile bool gMaptEnabled = false ; // false : disabled, true : enabled
 #endif
 
 extern ANSC_HANDLE bus_handle;
@@ -420,6 +429,13 @@ static int se_fd = 0;
 static token_t token;
 
 static async_id_t async_id[7];
+static async_id_t lan2wanAsync_id;
+
+#if defined(FEATURE_MAPT) || defined(FEATURE_SUPPORT_MAPT_NAT46)
+
+static async_id_t mapt_async_id[2];
+
+#endif
 
 static short server_port;
 static char  server_ip[19];
@@ -840,6 +856,25 @@ EvtDispterEventInits(void)
     if (rc) {
        return(EVENT_ERROR);
     }
+    rc = sysevent_setnotification(se_fd, token, WAN_TO_LAN_OPERATIONAL_MODE, &lan2wanAsync_id);
+    if (rc) {
+        CcspTraceError(("%s: sysevent_setnotification failed for wan_to_lan_operational_mode\n", __FUNCTION__));
+    }
+    #if defined(FEATURE_MAPT) || defined(FEATURE_SUPPORT_MAPT_NAT46)
+
+    rc = sysevent_setnotification(se_fd, token, SYSEVENT_MAPT_CONFIG_FLAG, &mapt_async_id[0]);
+    if (rc) {
+        CcspTraceError(("%s: sysevent_setnotification failed for %s\n", __FUNCTION__, SYSEVENT_MAPT_CONFIG_FLAG));
+        return(EVENT_ERROR);
+    }
+    rc = sysevent_setnotification(se_fd, token, SYSEVENT_MAPT_TOTAL_PORTS, &mapt_async_id[1]);
+    if (rc) {
+        CcspTraceError(("%s: sysevent_setnotification failed for %s\n", __FUNCTION__, SYSEVENT_MAPT_TOTAL_PORTS));
+        return(EVENT_ERROR);
+    }
+
+    #endif
+
 #if defined (RBUS_WAN_IP)
 #if defined (_RDKB_GLOBAL_PRODUCT_REQ_)
     if( TRUE == gIsLANULAFeatureSupport )
@@ -952,10 +987,12 @@ EvtDispterEventListen(void)
             {
                 if (!strncmp(value_str, "started", 7))
                 {
+                    gWanStatus = true;
                     ret = EVENT_WAN_STARTED;
                 }
                 else if (!strncmp(value_str, "stopped", 7)) 
                 {
+                    gWanStatus = false;
                     ret = EVENT_WAN_STOPPED;
                 }
             }
@@ -1013,6 +1050,36 @@ EvtDispterEventListen(void)
             }
 
 #endif
+#if defined(FEATURE_MAPT) || defined(FEATURE_SUPPORT_MAPT_NAT46)
+            else if(!strcmp(name_str, SYSEVENT_MAPT_CONFIG_FLAG))
+            {
+                CcspTraceDebug(("%s: Current MAP-T config flag is %s\n", __FUNCTION__, value_str));
+                if (strcmp(value_str, "set") == 0)
+                    gMaptEnabled = true;
+                else
+                    gMaptEnabled = false;
+            }
+            else if(!strcmp(name_str, SYSEVENT_MAPT_TOTAL_PORTS))
+            {
+                gMaptTotalPorts = atoi(value_str);
+                CcspTraceDebug(("%s: Current MAP-T total ports is %d\n", __FUNCTION__, gMaptTotalPorts));
+            }
+#endif
+            else if (!strcmp(name_str, WAN_TO_LAN_OPERATIONAL_MODE))
+            {
+                CcspTraceDebug(("%s:wan_to_lan_operational_mode value:%s\n",__FUNCTION__, value_str));
+                if (0 == strcasecmp(value_str, "Manageable"))
+                {
+                    CcspTraceInfo(("%s:wan_to_lan_operational_mode is set to Manageable\n",__FUNCTION__));
+                    t2_event_d("Lan2WanOperationalModeManageable_Lan2WanBlocked", 1);
+                }
+                else
+                {
+                   CcspTraceInfo(("%s:wan_to_lan_operational_mode is not in Manageable mode\n",__FUNCTION__));
+                   t2_event_d("Lan2WanOperationalModeServiceable_Lan2WanAllowed", 1);
+                }
+                sysevent_set(se_fd, token, "firewall-restart", NULL, 0);
+            }
         } else {
             CcspTraceWarning(("Received msg that is not a SE_MSG_NOTIFICATION (%d)\n", msg_type));
 	    if (  0 != system("pidof syseventd")) {
@@ -1050,6 +1117,7 @@ EvtDispterEventClose(void)
     }
 #endif
     sysevent_rmnotification(se_fd, token, async_id[6]);
+    sysevent_rmnotification(se_fd, token, lan2wanAsync_id);
     /* close this session with syseventd */
     sysevent_close(se_fd, token);
 
@@ -1078,9 +1146,16 @@ EvtDispterCheckEvtStatus(int fd, token_t token)
     /*wan-status*/
     if ( 0 == sysevent_get(fd, token, "wan-status", evtValue, sizeof(evtValue)) && '\0' != evtValue[0])
     {
+        CcspTraceDebug(("%s: Current wan-status is %s\n", __FUNCTION__, evtValue));
         if (0 == strncmp(evtValue, "started", strlen("started")))
+        {
+            gWanStatus = true;
             if (ANSC_STATUS_SUCCESS != EvtDispterCallFuncByEvent("wan-status"))
                 returnStatus = ANSC_STATUS_FAILURE;
+        }
+        else
+            gWanStatus = false;
+
     }
     if ( 0 == sysevent_get(fd, token, IPV6_PREFIX_EVENT, evtValue, sizeof(evtValue)) && '\0' != evtValue[0])
     {
@@ -1130,6 +1205,31 @@ EvtDispterCheckEvtStatus(int fd, token_t token)
     }
 #endif
 #endif /*RBUS_WAN_IP*/
+#if defined(FEATURE_MAPT) || defined(FEATURE_SUPPORT_MAPT_NAT46)
+    if ( 0 == sysevent_get(fd, token, SYSEVENT_MAPT_CONFIG_FLAG, evtValue, sizeof(evtValue)) && '\0' != evtValue[0])
+    {
+        CcspTraceDebug(("%s: Current MAP-T config flag is %s\n", __FUNCTION__, evtValue));
+        if (strcmp(evtValue, "set") == 0)
+            gMaptEnabled = true;
+        else
+            gMaptEnabled = false;      
+    
+    }
+    if ( 0 == sysevent_get(fd, token, SYSEVENT_MAPT_TOTAL_PORTS, evtValue, sizeof(evtValue)) && '\0' != evtValue[0])
+    {
+        gMaptTotalPorts = atoi(evtValue);
+        CcspTraceDebug(("%s: Current MAP-T total ports is %d\n", __FUNCTION__, gMaptTotalPorts));
+    }
+#endif
+    if (0 == sysevent_get(fd, token, WAN_TO_LAN_OPERATIONAL_MODE, evtValue, sizeof(evtValue)) && '\0' != evtValue[0])
+    {
+        if (0 == strcmp(evtValue, "Manageable"))
+        {
+           t2_event_d("Lan2WanOperationalModeManageable_Lan2WanBlocked", 1);
+           CcspTraceInfo(("%s:wan_to_lan_operational_mode is set to Manageable\n",__FUNCTION__));
+           sysevent_set(se_fd, token, "firewall-restart", NULL, 0);
+        }
+    }
     return returnStatus;
 }
 

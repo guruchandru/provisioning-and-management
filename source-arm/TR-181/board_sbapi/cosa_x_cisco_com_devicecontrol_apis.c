@@ -1805,7 +1805,7 @@ CosaDmlDcSetRebootDevice
 		}
 		else
         {
-#if defined (_CBR_PRODUCT_REQ_) || defined (_BWG_PRODUCT_REQ_) || defined (_CBR2_PRODUCT_REQ_)
+#if defined (_CBR_PRODUCT_REQ_) || defined (_BWG_PRODUCT_REQ_) || defined (_CBR2_PRODUCT_REQ_) || defined(_ONESTACK_PRODUCT_REQ_)
 //TCCBR-4087
             int                         ret = -1;
             int                         size = 0;
@@ -2045,7 +2045,7 @@ void* restoreAllDBs(void* arg)
         v_secure_system("touch /nvram/brcm_wifi_factory_reset"); 
 #endif
 
-#if  defined (_XB10_PRODUCT_REQ_)
+#if  defined (_XB10_PRODUCT_REQ_) ||  defined(WAN_MANAGER_UNIFICATION_ENABLED) //If Wan unification is enabled. clear the ethwan flags on FR. The Wan Manager should configure this based on the scanning policy.
      v_secure_system("rm -f /nvram/ethwan_interface"); 
      v_secure_system("rm -f /nvram/ETHWAN_ENABLE"); 
      v_secure_system("syscfg set selected_wan_mode 2");
@@ -2094,6 +2094,10 @@ void* restoreAllDBs(void* arg)
 #elif defined(_COSA_BCM_MIPS_)
         v_secure_system("xf3_erase_nvram");
 #elif defined(_SR213_PRODUCT_REQ_)
+	/* Remove LXY database and certs from nvram during Factory-Reset */
+	v_secure_system("rm -rf /nvram/lxy");
+	v_secure_system("rm -rf /nvram/certs");
+	v_secure_system("rm -rf /nvram/dl");
     /* Wipe out all user data. */
     v_secure_system("sync; find /nvram2 /data -mindepth 1 | grep -vE \"Q[[:xdigit:]]{8}$\" | xargs rm -rf; sync");
     //set flags for all necessary modules.voice module will use HFRES_TELCOVOIP and HFRES_TELCOVOICE
@@ -2383,7 +2387,7 @@ CosaDmlDcSetFactoryReset
 	   	CcspTraceError(("FactoryReset:%s BAD parameter passed to factory defaults parameter ...\n",__FUNCTION__));
 		return ANSC_STATUS_BAD_PARAMETER;
 	    }
-#if (defined (_XB6_PRODUCT_REQ_) || defined (_CBR_PRODUCT_REQ_)) && defined (_COSA_BCM_ARM_) || defined (_HUB4_PRODUCT_REQ_) || defined (_PLATFORM_RASPBERRYPI_) || defined(_COSA_BCM_MIPS_) || defined(_XER5_PRODUCT_REQ_)
+#if (defined (_XB6_PRODUCT_REQ_) || defined (_CBR_PRODUCT_REQ_)) && defined (_COSA_BCM_ARM_) || defined (_HUB4_PRODUCT_REQ_) || defined (_PLATFORM_RASPBERRYPI_) || defined(_COSA_BCM_MIPS_) || defined(_XER5_PRODUCT_REQ_) || defined (_PLATFORM_BANANAPI_R4_)
                 {
                         unsigned int dbValue = 0;
                         FILE *pdbFile = NULL;
@@ -4343,7 +4347,7 @@ void* bridge_mode_wifi_notifier_thread(void* arg) {
 #endif 
  {"Device.WiFi.Radio.1.Enable", acSetRadioString, ccsp_boolean}, 
  {"Device.WiFi.Radio.2.Enable", acSetRadioString, ccsp_boolean},
-#if !defined (_CBR_PRODUCT_REQ_) && !defined (_BWG_PRODUCT_REQ_) // CBR and BWG don't have XHS don't force here
+#if !defined (_CBR_PRODUCT_REQ_) && !defined (_BWG_PRODUCT_REQ_) && !defined (_PLATFORM_BANANAPI_R4_) // CBR and BWG don't have XHS don't force here
  {"Device.WiFi.SSID.3.Enable", acSetRadioString, ccsp_boolean},
 #endif
  {"Device.WiFi.Radio.3.Enable", acSetRadioString, ccsp_boolean}
